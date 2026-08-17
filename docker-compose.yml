@@ -1,0 +1,47 @@
+# ============================================================================
+#  TikTokChecker - docker-compose
+#  `docker compose up -d --build`
+# ============================================================================
+
+services:
+  tiktok-checker:
+    build: .
+    container_name: tiktok-checker
+    restart: unless-stopped
+
+    # Variables sensibles desde .env (no se copian a la imagen).
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-UTC}
+
+    init: true
+
+    # Hardening para un contenedor mínimo.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # Límites de recursos (home server modesto).
+    cpus: 0.5
+    mem_limit: 512m
+    mem_reservation: 128m
+
+    # Volumen persistente: cookies + SQLite.
+    # Como volumen NOMBRADO, Docker copia automáticamente el propietario
+    # (usuario 'app') al crearlo, evitando problemas de permisos.
+    volumes:
+      - checker-data:/data
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+volumes:
+  checker-data:

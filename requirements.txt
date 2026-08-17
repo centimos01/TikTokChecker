@@ -1,0 +1,7 @@
+# Cliente HTTP para la API web interna de TikTok.
+# No se necesita ninguna librería de terceros específica para TikTok:
+# se usa requests con cookies del navegador directamente.
+requests>=2.34.2,<3
+
+# Gateway de Discord para Rich Presence en tiempo real.
+websockets>=13.0,<14
