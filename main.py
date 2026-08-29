@@ -18,6 +18,10 @@ Arquitectura
   snapshot actual de "seguidos" y "seguidores", se compara contra lo que hay
   en base de datos y se registra el histórico de unfollows (con detección de
   "volvieron a seguirte" para avisar de nuevo si te vuelven a dejar).
+* Dos tipos de aviso por Discord:
+  - "Baja de vuelta" (te dejan de seguir pero TÚ sigues): siempre activo.
+  - "Baja total" (te dejan de seguir Y ya no los sigues): configurable con
+    el comando slash `/notificaciones on|off`.
 * Bucle en segundo plano con intervalo configurable + jitter aleatorio para
   comportarse de forma orgánica.
 * Si un ciclo falla (red, login o API de TikTok) se envía un aviso de error
@@ -129,9 +133,67 @@ def db_connect(path: str, *, check_same_thread: bool = True) -> sqlite3.Connecti
 
         CREATE INDEX IF NOT EXISTS idx_following_seen ON following(last_seen);
         CREATE INDEX IF NOT EXISTS idx_followers_seen ON followers(last_seen);
+
+        -- Configuración persistente (p. ej. notificaciones de unfollow on/off).
+        CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        -- Histórico de seguidores por ciclo: necesario para detectar a quién
+        -- te siguió y luego dejó de hacerlo (caso "te dejó de seguir del todo").
+        CREATE TABLE IF NOT EXISTS followers_history (
+            run_at   TEXT NOT NULL,
+            username TEXT NOT NULL,
+            user_id  TEXT,
+            nickname TEXT,
+            PRIMARY KEY (run_at, username)
+        );
+
+        -- Caso especial: te dejó de seguir Y tú tampoco lo seguías ya en el
+        -- ciclo anterior (baja total). Es configurable (on/off) por Discord.
+        CREATE TABLE IF NOT EXISTS fully_unfollowed (
+            username       TEXT PRIMARY KEY,
+            user_id        TEXT,
+            nickname       TEXT,
+            first_detected TEXT NOT NULL,
+            last_detected  TEXT NOT NULL,
+            alerts         INTEGER NOT NULL DEFAULT 1
+        );
         """
     )
+    # Valor por defecto del aviso configurable "baja total"
+    # (te dejan de seguir y tú tampoco los sigues): ACTIVADO.
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) "
+        "VALUES ('full_alerts_enabled', '1')"
+    )
+    conn.commit()
     return conn
+
+
+def get_setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
+    """Lee un ajuste persistente de la tabla settings."""
+    row = conn.execute(
+        "SELECT value FROM settings WHERE key = ?", (key,)
+    ).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Guarda (upsert) un ajuste persistente en la tabla settings."""
+    conn.execute(
+        """INSERT INTO settings (key, value) VALUES (?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+        (key, str(value)),
+    )
+    conn.commit()
+
+
+def full_alerts_enabled(conn: sqlite3.Connection) -> bool:
+    """True si están activas las alertas de 'baja total'
+    (te dejan de seguir y tú tampoco los sigues)."""
+    return get_setting(conn, "full_alerts_enabled", "1") not in ("0", "false", "no", "off")
 
 
 def save_snapshot(conn: sqlite3.Connection, table: str,
@@ -202,6 +264,87 @@ def compute_new_unfollows(conn: sqlite3.Connection, following: dict,
         )
 
     return new_unfollows
+
+
+def log_followers_history(conn: sqlite3.Connection, followers: dict,
+                          run_at: str) -> None:
+    """Guarda el snapshot de seguidores de este ciclo en el histórico."""
+    conn.executemany(
+        """INSERT OR REPLACE INTO followers_history
+               (run_at, username, user_id, nickname)
+           VALUES (?, ?, ?, ?)""",
+        [(run_at, u, d.get("user_id", ""), d.get("nickname", ""))
+         for u, d in followers.items()],
+    )
+
+
+def previous_followers(conn: sqlite3.Connection, run_at: str) -> set[str]:
+    """Devuelve el conjunto de usernames que te seguían en el ciclo anterior."""
+    row = conn.execute(
+        "SELECT MAX(run_at) AS prev FROM followers_history WHERE run_at < ?",
+        (run_at,),
+    ).fetchone()
+    if not row or not row["prev"]:
+        return set()
+    rows = conn.execute(
+        "SELECT username FROM followers_history WHERE run_at = ?",
+        (row["prev"],),
+    ).fetchall()
+    return {r["username"] for r in rows}
+
+
+def compute_full_unfollows(conn: sqlite3.Connection, prev_followers: set,
+                           following: dict, followers: set,
+                           run_at: str) -> list[str]:
+    """
+    Detecta el caso 'baja total': personas que te seguían en el ciclo anterior,
+    ya no te siguen Y tampoco están en tu 'following' actual (tú tampoco las
+    sigues). Son bajas nuevas (o no registradas previamente).
+
+    Es el caso configurable (on/off) por Discord, a diferencia de la 'baja de
+    vuelta' (te dejan de seguir pero tú seguías), que siempre avisa.
+    """
+    if not prev_followers:
+        return []
+
+    new = []
+    for username in sorted(prev_followers - followers):
+        # Si tú tampoco lo sigues ahora -> baja total.
+        if username in following:
+            continue
+        row = conn.execute(
+            "SELECT 1 FROM fully_unfollowed WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if row is not None:
+            continue  # ya notificado antes (repetido)
+        new.append(username)
+
+    for username in new:
+        info = prev_info(username, conn, run_at)
+        conn.execute(
+            """INSERT INTO fully_unfollowed
+                   (username, user_id, nickname, first_detected, last_detected,
+                    alerts)
+               VALUES (?, ?, ?, ?, ?, 1)""",
+            (username, info.get("user_id", ""), info.get("nickname", ""),
+             run_at, run_at),
+        )
+
+    return new
+
+
+def prev_info(username: str, conn: sqlite3.Connection,
+              run_at: str) -> dict:
+    """Recupera user_id/nickname del histórico de seguidores para un usuario."""
+    row = conn.execute(
+        "SELECT user_id, nickname FROM followers_history "
+        "WHERE username = ? AND run_at < ? ORDER BY run_at DESC LIMIT 1",
+        (username, run_at),
+    ).fetchone()
+    if not row:
+        return {}
+    return {"user_id": row["user_id"] or "", "nickname": row["nickname"] or ""}
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +749,10 @@ def run_once(conn: sqlite3.Connection, cfg: dict) -> list[str]:
     1. Login (reutilizando cookies).
     2. Descarga de seguidos y seguidores (con pausa aleatoria entre llamadas).
     3. Persistencia del snapshot en SQLite y comparación con lo anterior.
-    4. Alerta a Discord solo si hay unfollows NUEVOS.
+    4. Alerta por Discord:
+       - "baja de vuelta" (te dejan de seguir pero TÚ sigues): siempre avisa.
+       - "baja total" (te dejan de seguir y ya no los sigues): aviso
+         configurable por Discord (/notificaciones).
     """
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -629,6 +775,13 @@ def run_once(conn: sqlite3.Connection, cfg: dict) -> list[str]:
 
     new_unfollows = compute_new_unfollows(conn, following, set(followers), started)
 
+    # Caso configurable: baja total (te dejó de seguir y tú tampoco lo sigues).
+    prev_followers = previous_followers(conn, started)
+    log_followers_history(conn, followers, started)
+    full_unfollows = compute_full_unfollows(
+        conn, prev_followers, following, set(followers), started
+    )
+
     # Las tablas de snapshot solo conservan el estado vigente del último ciclo.
     prune_old_snapshots(conn, "following", started)
     prune_old_snapshots(conn, "followers", started)
@@ -641,7 +794,8 @@ def run_once(conn: sqlite3.Connection, cfg: dict) -> list[str]:
     )
     conn.commit()
 
-    # ---- Notificar por Discord solo las bajas nuevas. ----
+    # ---- Notificar por Discord. ----
+    # 1) Baja de vuelta (te dejan de seguir pero tú seguías): SIEMPRE avisa.
     if new_unfollows:
         update_bot_presence(len(following), len(followers),
                             unfollow=new_unfollows[0])
@@ -662,7 +816,34 @@ def run_once(conn: sqlite3.Connection, cfg: dict) -> list[str]:
         log.info("Enviadas alertas para %d unfollow(s) nuevos.",
                  len(new_unfollows))
     else:
-        log.info("Sin nuevos unfollows en este ciclo.")
+        log.info("Sin bajas de vuelta en este ciclo.")
+
+    # 2) Baja total (te dejan de seguir y tú tampoco los sigues):
+    #    configurable por Discord (/notificaciones).
+    if full_unfollows:
+        if full_alerts_enabled(conn):
+            check_id = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM checks WHERE ok = 1"
+            ).fetchone()[0]
+            footer = (
+                f"Chequeo #{check_id} · seguidos: {len(following)} "
+                f"· seguidores: {len(followers)}"
+            )
+            discord_embed(
+                cfg["discord_token"],
+                cfg["discord_channel"],
+                f"{len(full_unfollows)} te dejó/dejaron de seguir "
+                f"y ya no tú tampoco los sigues",
+                format_list(full_unfollows),
+                0xEB459E,  # fucsia/magenta Discord
+                footer=footer,
+                timestamp=finished,
+            )
+            log.info("Enviadas alertas de baja total para %d.",
+                     len(full_unfollows))
+        else:
+            log.info("Baja total desactivada por Discord: %d registradas "
+                     "pero no enviadas.", len(full_unfollows))
 
     # Actualizar presencia del bot con los conteos finales.
     update_bot_presence(len(following), len(followers))
@@ -926,6 +1107,24 @@ class DiscordGateway:
             "description": "Fuerza una comprobación manual ahora mismo",
             "type": 1,
         },
+        {
+            "name": "notificaciones",
+            "description": "Activa/desactiva los avisos de 'baja total' "
+                           "(te dejaron de seguir y ya no los sigues)",
+            "type": 1,
+            "options": [
+                {
+                    "name": "estado",
+                    "description": "on: activar avisos · off: desactivar avisos",
+                    "type": 3,  # STRING
+                    "required": False,
+                    "choices": [
+                        {"name": "on", "value": "on"},
+                        {"name": "off", "value": "off"},
+                    ],
+                }
+            ],
+        },
     ]
 
     async def _register_commands(self) -> None:
@@ -944,6 +1143,8 @@ class DiscordGateway:
             await self._cmd_status(interaction)
         elif name == "check":
             await self._cmd_check(interaction)
+        elif name == "notificaciones":
+            await self._cmd_notificaciones(interaction)
         else:
             await self._respond(interaction,
                                 content="Comando desconocido.")
@@ -1008,6 +1209,12 @@ class DiscordGateway:
 
         next_check = self.cfg["interval_hours"]
 
+        def _get():
+            return full_alerts_enabled(self.conn)
+
+        full_enab = await asyncio.to_thread(_get)
+        full_txt = "✅ Activas" if full_enab else "⛔ Desactivadas"
+
         embed = {
             "title": "📊 Estado de TikTok Checker",
             "color": 0x5865F2,
@@ -1024,9 +1231,81 @@ class DiscordGateway:
                  "value": f"~{next_check:.0f} h", "inline": True},
                 {"name": "🔁 Total comprobaciones",
                  "value": str(total), "inline": True},
+                {"name": "📣 Aviso: te dejan de seguir y los sigues",
+                 "value": "✅ Siempre activo",
+                 "inline": True},
+                {"name": "📣 Aviso: te dejan de seguir y no los sigues",
+                 "value": f"{full_txt}  ·  `/notificaciones on|off`",
+                 "inline": True},
             ],
         }
         await self._respond(interaction, embeds=[embed])
+
+    async def _cmd_notificaciones(self, interaction: dict) -> None:
+        def _get():
+            return full_alerts_enabled(self.conn)
+
+        estado = None
+        for opt in interaction.get("data", {}).get("options", []):
+            if opt.get("name") == "estado":
+                estado = opt.get("value")
+                break
+
+        current = await asyncio.to_thread(_get)
+
+        if estado is None:
+            estado_txt = "✅ **ACTIVADAS**" if current else "⛔ **DESACTIVADAS**"
+            await self._respond(
+                interaction,
+                content=(
+                    "📣 **Aviso de 'baja total'** (quienes te dejan de "
+                    "seguir y ya no los sigues)\n\n"
+                    f"Estado actual: {estado_txt}\n\n"
+                    "Este aviso es el único configurable. El aviso de "
+                    "quienes te dejan de seguir pero TÚ sigues está "
+                    "**siempre activo**.\n\n"
+                    "Usa `/notificaciones on` para activar los avisos "
+                    "o `/notificaciones off` para desactivarlos."
+                ),
+            )
+            return
+
+        if estado not in ("on", "off"):
+            await self._respond(
+                interaction,
+                content="❌ Valor no válido. Usa `/notificaciones on` "
+                        "o `/notificaciones off`.",
+            )
+            return
+
+        nuevo = estado == "on"
+        if nuevo == current:
+            estado_txt = "✅ **ACTIVADAS**" if nuevo else "⛔ **DESACTIVADAS**"
+            await self._respond(
+                interaction,
+                content=f"El aviso de 'baja total' ya estaba {estado_txt}.",
+            )
+            return
+
+        def _set():
+            set_setting(self.conn, "full_alerts_enabled", "1" if nuevo else "0")
+
+        await asyncio.to_thread(_set)
+
+        if nuevo:
+            msg = ("✅ **Aviso de 'baja total' ACTIVADO.**\n"
+                   "Se te avisará por Discord de quienes te dejan de seguir "
+                   "y ya no los sigues.\n"
+                   "(El aviso de quienes te dejan de seguir pero TÚ "
+                   "sigues está siempre activo.)")
+        else:
+            msg = ("⛔ **Aviso de 'baja total' DESACTIVADO.**\n"
+                   "Seguiré registrando esta información, pero **no** "
+                   "enviaré avisos de quienes te dejan de seguir y no "
+                   "sigues.\n"
+                   "Usa `/notificaciones on` para volver a activarlo.")
+        await self._respond(interaction, content=msg)
+        log.info("Aviso de baja total -> %s (por comando de Discord).", estado)
 
     def _run_check(self) -> None:
         with _check_lock:

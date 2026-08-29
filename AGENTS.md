@@ -8,6 +8,27 @@ Spanish (README, logs, messages); keep that language in output.
 > even though this file is written in English. Code comments, log messages and
 > Discord alerts are also in Spanish — keep them that way.
 
+## Two alert types (distinct semantics)
+
+`main.py` distinguishes two kinds of unfollow, notified differently:
+
+- **"Baja de vuelta"** (te dejan de seguir pero TÚ sigues = `following - followers`):
+  always active, not configurable. Red embed, `0xED4245`.
+- **"Baja total"** (te dejan de seguir Y ya no los sigues): **configurable** via
+  Discord slash command `/notificaciones on|off`. Fuchsia embed, `0xEB459E`.
+
+Toggling is NOT env-var based — it is persisted in the SQLite `settings` table
+(key `full_alerts_enabled`), so it survives restarts. When OFF, detections are
+still recorded to the DB but no embed is sent. "Baja total" detection needs
+`followers_history` (per-cycle snapshot) to compare against the previous cycle:
+the first run only establishes a baseline, so no "baja total" alert fires until
+the second cycle. Keep both tables (`settings`, `followers_history`,
+`fully_unfollowed`) intact when editing the schema.
+
+Slash commands live in `DiscordGateway.SLASH_COMMANDS` and are registered only
+on startup. After adding/changing a command you must rebuild the image on the
+server (`docker compose up -d --build`) or the bot won't see the change.
+
 ## Work machine vs. deploy target
 
 - This machine (Windows) is NOT the deploy target: Docker is not installed,

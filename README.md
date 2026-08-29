@@ -1,8 +1,11 @@
 # TikTokChecker
 
-Servicio **ultraligero** autohosteado en Docker que audita tu cuenta de TikTok,
-detecta quién te ha dejado de seguir (usuarios a los que sigues pero que ya no te
-siguen de vuelta) y envía una alerta a un canal de Discord mediante un Bot.
+Servicio **ultraligero** autohosteado en Docker que audita tu cuenta de TikTok
+y envía alertas a un canal de Discord mediante un Bot. Detecta dos tipos de baja:
+
+- **Baja de vuelta:** te dejan de seguir pero TÚ sigues. Aviso **siempre activo**.
+- **Baja total:** te dejan de seguir y ya no los sigues. Aviso **configurable**
+  por Discord con `/notificaciones on|off`.
 
 Stack: **Python 3.13 (Debian Trixie) + requests + SQLite (WAL)**. Sin frameworks
 web, sin dependencias pesadas, un único proceso con bucle de temporización +
@@ -34,9 +37,11 @@ actualizados de seguidos y seguidores).
    **seguidores** (`/api/follower/list`), con una pausa aleatoria de 30–90 s
    entre ambas llamadas.
 4. Guarda ambos snapshots en SQLite y los compara con el ciclo anterior.
-5. Solo si hay **unfollows nuevos** (no repetidos) envía un embed a Discord
-   con **todos** los usernames (sin truncar). Si la lista es muy larga se
-   divide automáticamente en varios embeds en el mismo mensaje.
+5. Detecta y avisa de dos tipos de baja:
+   - **Baja de vuelta** (te dejan de seguir pero TÚ sigues): aviso
+     **siempre activo**.
+   - **Baja total** (te dejan de seguir Y ya no los sigues): aviso
+     **configurable por Discord** con `/notificaciones on|off`.
 6. Recuerda a quien volvió a seguirte: si vuelven a dejarte, avisa de nuevo.
 7. Si un ciclo falla (problema de red, cookies caducadas o CAPTCHA de TikTok),
    envía un aviso de **error** al canal de Discord y reintenta en el siguiente
@@ -51,11 +56,30 @@ El bot registra automáticamente estos comandos al iniciar:
 
 | Comando | Descripción |
 |---------|-------------|
-| `/status` | Muestra seguidos, seguidores, unfollows del último chequeo, próximo chequeo y total de comprobaciones |
+| `/status` | Muestra seguidos, seguidores, unfollows del último chequeo, próximo chequeo, total de comprobaciones y el estado de los avisos |
 | `/check` | Fuerza una comprobación manual (misma lógica que `--once` pero sin reiniciar el contenedor) |
+| `/notificaciones` | Activa (`on`) o desactiva (`off`) el aviso de "baja total" por Discord. Sin argumentos muestra el estado actual |
 
 Los comandos se registran globalmente al conectar al Gateway y están disponibles
 en todos los servidores donde esté el bot.
+
+### Control de avisos por Discord
+
+El checker distingue dos tipos de baja:
+
+- **Baja de vuelta:** alguien te deja de seguir pero TÚ sí lo sigues. Este
+  aviso está **siempre activo** y no se puede desactivar.
+- **Baja total:** alguien te deja de seguir Y ya no lo sigues (dejó de
+  seguirte del todo). Este aviso es **configurable** con
+  `/notificaciones on|off`:
+
+  - **on (por defecto):** cada ciclo envía un embed (fucsia) cuando se detecta
+    una baja total.
+  - **off:** el checker sigue registrando las bajas totales en SQLite, pero
+    **no** envía el aviso a Discord. Puedes reactivarlo con `/notificaciones on`.
+
+El estado se guarda de forma persistente y se conserva entre reinicios. `/status`
+muestra el estado de ambos tipos de aviso.
 
 ## Desplegar en otra máquina
 
