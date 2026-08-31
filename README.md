@@ -24,6 +24,7 @@ actualizados de seguidos y seguidores).
 | `docker-compose.yml` | Límites de CPU/RAM, volumen persistente `checker-data:/data`, hardening |
 | `requirements.txt` | Solo `requests` y `websockets` — dependencias mínimas |
 | `main.py` | Script autónomo: carga cookies, descarga following/followers vía API interna de TikTok, snapshots SQLite, comparación, alerta Discord, Rich Presence en tiempo real |
+| `x_gnarly.py` | Generador de la firma **X-Gnarly** (anti-scraping) que TikTok exige en las llamadas de API webapp. Python puro, sin dependencias |
 | `install.sh` | Instalador interactivo para Debian 13: Docker + config + primer arranque |
 | `.env.example` | Plantilla de configuración |
 
@@ -244,6 +245,12 @@ Todos los endpoints requieren:
 - Cookies de sesión válidas (especialmente `sessionid`).
 - Token CSRF enviado como header `x-csrf-token`.
 - User-Agent y headers similares a los de un navegador real.
+- **Firma `X-Gnarly`** en la query string (generada por `x_gnarly.py`). Sin
+  ella, TikTok responde `200` con cuerpo vacío. Es el requisito anti-scraping
+  actual de la web; TikTok lo rota periódicamente, así que si las llamadas
+  vuelven a devolver `200 0`, probablemente hay que actualizar `x_gnarly.py`
+  a una versión más reciente del algoritmo (el checker avisará por Discord
+  al fallar la comprobación).
 
 El cliente HTTP implementa retry automático ante errores transitorios (429,
 403, 5xx) con backoff progresivo y pausas aleatorias entre páginas.
