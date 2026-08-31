@@ -58,6 +58,8 @@ try:
 except ImportError:
     _HAS_WS = False
 
+from x_gnarly import get_X_Gnarly
+
 log = logging.getLogger("tt-check")
 
 # ---------------------------------------------------------------------------
@@ -570,13 +572,27 @@ class TikTokClient:
     # -- Peticiones HTTP ----------------------------------------------------
 
     def request(self, method: str, path: str, **kw) -> dict | None:
-        """Realiza una petición a la API interna de TikTok con CSRF y retry
-        ante errores transitorios (429, 403, 5xx)."""
-        url = f"{TIKTOK_BASE}{path}" if path.startswith("/") else path
+        """Realiza una petición a la API interna de TikTok con CSRF, firma
+        X-Gnarly y retry ante errores transitorios (429, 403, 5xx)."""
+        base = f"{TIKTOK_BASE}{path}" if path.startswith("/") else path
         headers = dict(kw.pop("headers", {}))
         headers.setdefault("x-csrf-token", self._csrf_token)
         # TikTok webapp moderno también espera el CSRF en este header.
         headers.setdefault("x-secsdk-csrf-token", self._csrf_token)
+
+        # Construir la query y firmarla con X-Gnarly (requisito anti-scraping).
+        params = kw.pop("params", None)
+        query = urlencode(params) if params else ""
+        url = base if not query else f"{base}?{query}"
+        if query:
+            try:
+                gnarly = get_X_Gnarly(query, "", USER_AGENT, version="5.1.2")
+                sep = "&" if "?" in url else "?"
+                url = f"{url}{sep}X-Gnarly={gnarly}"
+            except Exception as exc:
+                log.warning("No se pudo generar la firma X-Gnarly (%s); "
+                            "se continúa sin firmar.", exc)
+
         for attempt in range(3):
             log.debug("TT %s %s (intento %d)", method, url, attempt + 1)
             try:

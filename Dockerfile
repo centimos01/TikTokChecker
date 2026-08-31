@@ -16,6 +16,7 @@ RUN groupadd --system app && \
     useradd --system --gid app --home /app --shell /usr/sbin/nologin app
 
 COPY main.py .
+COPY x_gnarly.py .
 
 RUN mkdir -p /data && chown -R app:app /data
 
