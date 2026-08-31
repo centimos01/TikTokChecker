@@ -423,7 +423,7 @@ TIKTOK_BASE = "https://www.tiktok.com"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/130.0.0.0 Safari/537.36"
+    "Chrome/131.0.0.0 Safari/537.36"
 )
 
 
@@ -440,9 +440,18 @@ class TikTokClient:
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": USER_AGENT,
-            "Referer": "https://www.tiktok.com/",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+            "Accept-Encoding": "gzip, deflate",
+            "Referer": "https://www.tiktok.com/",
+            "Origin": "https://www.tiktok.com",
+            "sec-ch-ua": ('"Google Chrome";v="131", "Chromium";v="131", '
+                          '"Not_A Brand";v="24"'),
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
         })
         self.timeout = timeout
         self._csrf_token: str = ""
@@ -524,6 +533,32 @@ class TikTokClient:
                 if len(parts) >= 7:
                     self._cookies[parts[5]] = parts[6]
 
+    # -- Warm-up de sesión ---------------------------------------------------
+
+    def warmup(self) -> None:
+        """Hace una petición inicial a la portada de TikTok para que el
+        servidor renueve/emita las cookies de sesión y el token CSRF frescos
+        (ttwid, tt_csrf_token…), que luego se usan en los endpoints de API.
+
+        Sin esto, /api/user/detail suele responder 200 con cuerpo vacío.
+        """
+        try:
+            resp = self.session.get(
+                TIKTOK_BASE,
+                headers={"x-csrf-token": self._csrf_token},
+                timeout=self.timeout,
+                allow_redirects=True,
+            )
+            # Renovar CSRF desde las cookies/headers de la respuesta.
+            new_csrf = self._extract_csrf(resp)
+            if new_csrf:
+                self._csrf_token = new_csrf
+            log.debug("Warm-up: HTTP %s (%d bytes), CSRF=%s",
+                      resp.status_code, len(resp.content),
+                      bool(self._csrf_token))
+        except requests.RequestException as exc:
+            log.warning("Warm-up de sesión falló: %s", exc)
+
     # -- Peticiones HTTP ----------------------------------------------------
 
     def request(self, method: str, path: str, **kw) -> dict | None:
@@ -549,10 +584,22 @@ class TikTokClient:
                 new_csrf = self._extract_csrf(resp)
                 if new_csrf:
                     self._csrf_token = new_csrf
+                if not resp.content:
+                    # 200 con cuerpo vacío: TikTok bloquea/limita la petición.
+                    # Tratar como fallo transitorio y reintentar.
+                    log.warning("TikTok 200 con cuerpo vacío "
+                                "(posible bloqueo) — reintentando…")
+                    wait = min(30, 10 * (attempt + 1))
+                    time.sleep(wait)
+                    continue
                 try:
                     return resp.json()
                 except ValueError:
-                    return {}
+                    log.warning("TikTok 200 con JSON no válido "
+                                "(%.200s…) — reintentando…", resp.text[:200])
+                    wait = min(30, 10 * (attempt + 1))
+                    time.sleep(wait)
+                    continue
             if resp.status_code in (403, 429, 500, 502, 503):
                 wait = min(30, 10 * (attempt + 1))
                 log.warning("TikTok %s — esperando %ds…", resp.status_code, wait)
@@ -721,6 +768,7 @@ def login_tiktok(cfg: dict) -> TikTokClient:
     instrucciones claras.
     """
     client = TikTokClient(cfg["cookies_file"])
+    client.warmup()
 
     # Validación: obtener perfil propio.
     try:
