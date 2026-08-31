@@ -575,6 +575,8 @@ class TikTokClient:
         url = f"{TIKTOK_BASE}{path}" if path.startswith("/") else path
         headers = dict(kw.pop("headers", {}))
         headers.setdefault("x-csrf-token", self._csrf_token)
+        # TikTok webapp moderno también espera el CSRF en este header.
+        headers.setdefault("x-secsdk-csrf-token", self._csrf_token)
         for attempt in range(3):
             log.debug("TT %s %s (intento %d)", method, url, attempt + 1)
             try:
@@ -635,11 +637,13 @@ class TikTokClient:
             "uniqueId": "",
             "secUid": "",
             "device_platform": "webapp",
+            "aid": "1988",
         })
         if not data or data.get("statusCode") != 0:
             # Intento alternativo: el propio usuario con cookies.
             data = self.request("GET", "/api/user/detail/", params={
                 "device_platform": "webapp",
+                "aid": "1988",
             })
         if not data:
             raise RuntimeError("No se pudo obtener el perfil de TikTok.")
