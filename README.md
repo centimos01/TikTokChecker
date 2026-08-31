@@ -18,9 +18,8 @@
 >   2026.
 > - La vía correcta sería ejecutar las llamadas desde un **navegador headless
 >   real (Playwright/Puppeteer)** para que el propio SDK de TikTok genere las
->   firmas y el fingerprint, pero requiere ~500MB de RAM extra. El hardware
->   donde se desplegó este proyecto es un home server con **menos de 1GB de
->   RAM**, así que esa vía no es viable ahí.
+>   firmas y el fingerprint, pero requiere ~500MB de RAM extra por encima de
+>   un cliente HTTP ligero.
 >
 > **Qué hay implementado y funciona:** el checker descarga seguidos/seguidores
 > vía la API web interna de TikTok (con cookies de sesión, retry y backoff),
