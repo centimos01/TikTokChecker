@@ -1,5 +1,41 @@
 # TikTokChecker
 
+> ## 🚧 ESTE PROYECTO NO FUNCIONA (ROTO / ABANDONADO) 🚧
+>
+> **Así es: a día de hoy este proyecto NO funciona y queda abandonado.** Lo
+> publico como documentación y por si algún "ser de luz" quiere rescatar la
+> idea y hacerlo funcionar de nuevo.
+>
+> **Por qué no funciona:** TikTok protege su API web interna con la firma
+> anti-scraping **X-Gnarly** (sucesora de X-Bogus), que se regenera casi a
+> diario y además valida el *fingerprint* del navegador, el `msToken` y otros
+> parámetros frescos que una solución offline (solo `requests` + cookies) no
+> puede replicar. Los endpoints devuelven **HTTP 200 con cuerpo vacío** si la
+> firma no coincide.
+>
+> - La firma incluida (`x_gnarly.py`) corresponde al SDK **5.1.2** (septiembre
+>   2025), ya obsoleta frente a las versiones 5.2+/5.3 que TikTok exige en
+>   2026.
+> - La vía correcta sería ejecutar las llamadas desde un **navegador headless
+>   real (Playwright/Puppeteer)** para que el propio SDK de TikTok genere las
+>   firmas y el fingerprint, pero requiere ~500MB de RAM extra. El hardware
+>   donde se desplegó este proyecto es un home server con **menos de 1GB de
+>   RAM**, así que esa vía no es viable ahí.
+>
+> **Qué hay implementado y funciona:** el checker descarga seguidos/seguidores
+> vía la API web interna de TikTok (con cookies de sesión, retry y backoff),
+> persiste snapshots en SQLite (WAL), detecta dos tipos de baja y alerta por
+> Discord (con Rich Presence y el comando `/notificaciones`). El fallo no es
+> la lógica de auditoría ni las alertas — es exclusivamente la autenticación
+> de firmas contra TikTok.
+>
+> **Para rescatarlo**, hazte con un VPS con ≥2GB de RAM (o corre el bucle en
+> tu máquina de escritorio), integra las llamadas a los endpoints
+> `/api/user/detail`, `/api/following/list` y `/api/follower/list` **a través
+> de un navegador headless** que use tus cookies de sesión, y deja que el SDK
+> de TikTok firme cada petición. Mantén el resto de la lógica (SQLite +
+> Discord) tal cual.
+
 Servicio **ultraligero** autohosteado en Docker que audita tu cuenta de TikTok
 y envía alertas a un canal de Discord mediante un Bot. Detecta dos tipos de baja:
 
