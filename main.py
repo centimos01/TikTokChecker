@@ -501,6 +501,14 @@ class TikTokClient:
         log.info("Cookies cargadas (%d valores, sessionid=%s…).",
                  len(self._cookies),
                  self._cookies["sessionid"][:8])
+        # Diagnóstico: ¿el fichero incluye las cookies de firma/API que TikTok
+        # exige (msToken, ttwid, tt_csrf_token)? Si falta msToken la API suele
+        # devolver 200 con cuerpo vacío.
+        for sig in ("msToken", "ttwid", "tt_csrf_token", "ttcsrf",
+                    "csrf_token_id", "sessionid"):
+            present = bool(self._cookies.get(sig))
+            log.debug("Cookie de firma '%s': %s", sig, "presente" if present
+                      else "AUSENTE")
 
     def _load_cookies_json(self, data: list[dict] | dict) -> None:
         """Formato JSON: lista de objetos con 'name'/'value' o dict plano."""
